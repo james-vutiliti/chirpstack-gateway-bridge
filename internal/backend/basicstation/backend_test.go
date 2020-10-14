@@ -52,6 +52,12 @@ func (ts *BackendTestSuite) SetupTest() {
 	ts.backend, err = NewBackend(conf)
 	assert.NoError(err)
 
+	subscribeChan := make(chan events.Subscribe, 1)
+	ts.backend.gateways.subscribeEventFunc = func(pl events.Subscribe) {
+		subscribeChan <- pl
+	}
+	assert.NoError(ts.backend.Start())
+
 	ts.wsAddr = ts.backend.ln.Addr().String()
 
 	d := &websocket.Dialer{}
@@ -59,18 +65,23 @@ func (ts *BackendTestSuite) SetupTest() {
 	ts.wsClient, _, err = d.Dial(fmt.Sprintf("ws://%s/gateway/0102030405060708", ts.wsAddr), nil)
 	assert.NoError(err)
 
-	event := <-ts.backend.GetSubscribeEventChan()
+	event := <-subscribeChan
 	assert.Equal(events.Subscribe{Subscribe: true, GatewayID: lorawan.EUI64{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}}, event)
 }
 
 func (ts *BackendTestSuite) TearDownTest() {
+	subscribeChan := make(chan events.Subscribe, 1)
+	ts.backend.gateways.subscribeEventFunc = func(pl events.Subscribe) {
+		subscribeChan <- pl
+	}
+
 	assert := require.New(ts.T())
 	assert.NoError(ts.wsClient.Close())
 
-	event := <-ts.backend.GetSubscribeEventChan()
+	event := <-subscribeChan
 	assert.Equal(events.Subscribe{Subscribe: false, GatewayID: lorawan.EUI64{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}}, event)
 
-	assert.NoError(ts.backend.Close())
+	assert.NoError(ts.backend.Stop())
 }
 
 func (ts *BackendTestSuite) TestRouterInfo() {
@@ -120,6 +131,11 @@ func (ts *BackendTestSuite) TestVersion() {
 func (ts *BackendTestSuite) TestUplinkDataFrame() {
 	assert := require.New(ts.T())
 
+	uplinkFrameChan := make(chan gw.UplinkFrame, 1)
+	ts.backend.uplinkFrameFunc = func(pl gw.UplinkFrame) {
+		uplinkFrameChan <- pl
+	}
+
 	upf := structs.UplinkDataFrame{
 		RadioMetaData: structs.RadioMetaData{
 			DR:        5,
@@ -143,7 +159,7 @@ func (ts *BackendTestSuite) TestUplinkDataFrame() {
 
 	assert.NoError(ts.wsClient.WriteJSON(upf))
 
-	uplinkFrame := <-ts.backend.GetUplinkFrameChan()
+	uplinkFrame := <-uplinkFrameChan
 
 	assert.Len(uplinkFrame.RxInfo.UplinkId, 16)
 	uplinkFrame.RxInfo.UplinkId = nil
@@ -182,6 +198,11 @@ func (ts *BackendTestSuite) TestUplinkDataFrame() {
 func (ts *BackendTestSuite) TestJoinRequest() {
 	assert := require.New(ts.T())
 
+	uplinkFrameChan := make(chan gw.UplinkFrame, 1)
+	ts.backend.uplinkFrameFunc = func(pl gw.UplinkFrame) {
+		uplinkFrameChan <- pl
+	}
+
 	jr := structs.JoinRequest{
 		RadioMetaData: structs.RadioMetaData{
 			DR:        5,
@@ -204,7 +225,7 @@ func (ts *BackendTestSuite) TestJoinRequest() {
 
 	assert.NoError(ts.wsClient.WriteJSON(jr))
 
-	uplinkFrame := <-ts.backend.GetUplinkFrameChan()
+	uplinkFrame := <-uplinkFrameChan
 
 	assert.Len(uplinkFrame.RxInfo.UplinkId, 16)
 	uplinkFrame.RxInfo.UplinkId = nil
@@ -243,6 +264,11 @@ func (ts *BackendTestSuite) TestJoinRequest() {
 func (ts *BackendTestSuite) TestProprietaryDataFrame() {
 	assert := require.New(ts.T())
 
+	uplinkFrameChan := make(chan gw.UplinkFrame)
+	ts.backend.uplinkFrameFunc = func(pl gw.UplinkFrame) {
+		uplinkFrameChan <- pl
+	}
+
 	propf := structs.UplinkProprietaryFrame{
 		RadioMetaData: structs.RadioMetaData{
 			DR:        5,
@@ -260,7 +286,7 @@ func (ts *BackendTestSuite) TestProprietaryDataFrame() {
 
 	assert.NoError(ts.wsClient.WriteJSON(propf))
 
-	uplinkFrame := <-ts.backend.GetUplinkFrameChan()
+	uplinkFrame := <-uplinkFrameChan
 
 	assert.Len(uplinkFrame.RxInfo.UplinkId, 16)
 	uplinkFrame.RxInfo.UplinkId = nil
@@ -301,6 +327,11 @@ func (ts *BackendTestSuite) TestDownlinkTransmitted() {
 	id, err := uuid.NewV4()
 	assert.NoError(err)
 
+	txAckChan := make(chan gw.DownlinkTXAck, 1)
+	ts.backend.downlinkTxAckFunc = func(pl gw.DownlinkTXAck) {
+		txAckChan <- pl
+	}
+
 	ts.backend.diidCache.SetDefault("12345", id[:])
 
 	dtx := structs.DownlinkTransmitted{
@@ -310,7 +341,7 @@ func (ts *BackendTestSuite) TestDownlinkTransmitted() {
 
 	assert.NoError(ts.wsClient.WriteJSON(dtx))
 
-	txAck := <-ts.backend.GetDownlinkTXAckChan()
+	txAck := <-txAckChan
 
 	assert.Equal(gw.DownlinkTXAck{
 		GatewayId:  []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08},
@@ -437,12 +468,17 @@ func (ts *BackendTestSuite) TestRawPacketForwarderCommand() {
 }
 
 func (ts *BackendTestSuite) TestRawPacketForwarderEvent() {
+	rawPacketForwarderEventChan := make(chan gw.RawPacketForwarderEvent, 1)
+	ts.backend.rawPacketForwarderEventFunc = func(pl gw.RawPacketForwarderEvent) {
+		rawPacketForwarderEventChan <- pl
+	}
+
 	ts.T().Run("Binary", func(t *testing.T) {
 		assert := require.New(t)
 
 		assert.NoError(ts.wsClient.WriteMessage(websocket.BinaryMessage, []byte{0x01, 0x02, 0x03, 0x04}))
 
-		pl := <-ts.backend.GetRawPacketForwarderEventChan()
+		pl := <-rawPacketForwarderEventChan
 		assert.Equal([]byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}, pl.GatewayId)
 		assert.NotNil(pl.RawId)
 		assert.Equal([]byte{0x01, 0x02, 0x03, 0x04}, pl.Payload)
@@ -465,7 +501,7 @@ func (ts *BackendTestSuite) TestRawPacketForwarderEvent() {
 
 		assert.NoError(ts.wsClient.WriteMessage(websocket.TextMessage, []byte(jsonMsg)))
 
-		pl := <-ts.backend.GetRawPacketForwarderEventChan()
+		pl := <-rawPacketForwarderEventChan
 		assert.Equal([]byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}, pl.GatewayId)
 		assert.NotNil(pl.RawId)
 		assert.Equal([]byte(jsonMsg), pl.Payload)
