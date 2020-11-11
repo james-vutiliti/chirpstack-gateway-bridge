@@ -58,6 +58,7 @@ func NewBackend(conf config.Config) (*Backend, error) {
 		terminateOnConnectError: conf.Integration.MQTT.TerminateOnConnectError,
 		clientOpts:              paho.NewClientOptions(),
 		gateways:                make(map[lorawan.EUI64]struct{}),
+		gatewaysSubscribed:      make(map[lorawan.EUI64]struct{}),
 	}
 
 	switch conf.Integration.MQTT.Auth.Type {
