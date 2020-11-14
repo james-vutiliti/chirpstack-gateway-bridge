@@ -3,7 +3,7 @@ services:
   chirpstack-gateway-bridge:
     build:
       context: .
-      dockerfile: Dockerfile-devel
+      dockerfile: Dockerfile
     ports:
       - "1700:1700/udp"
     volumes:
