@@ -18,4 +18,5 @@ FROM alpine:3.11.2 AS production
 
 RUN apk --no-cache add ca-certificates
 COPY --from=development /chirpstack-gateway-bridge/build/chirpstack-gateway-bridge /usr/bin/chirpstack-gateway-bridge
+COPY configuration/chirpstack-gateway-bridge/chirpstack-gateway-bridge.toml /etc/chirpstack-gateway-bridge/chirpstack-gateway-bridge.toml
 ENTRYPOINT ["/usr/bin/chirpstack-gateway-bridge"]
